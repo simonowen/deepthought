@@ -1,0 +1,130 @@
+.DTI - Deep Thought disk Image
+==============================
+
+DTI images contain a byte-level decoding of disk created by the Deep Thought
+disk interface for the Jupiter Ace. For further details see:
+
+  http://www.jupiter-ace.co.uk/hardware_DeepThought.html
+
+File Format
+-----------
+
+Image Header
+
+offset  length  description
+0       4       signature "H2G2"
+4       1       tracks per side (40 or 80, taken from DOS catalogue)
+5       1       disk sides (1 or 2)
+6       2       track block size in bytes (typically 2304)
+8       ?       start of track data
+
+Tracks are stored in the order cyl 0 head 0, cyl 1 head 0, ...
+
+Track Header
+
+offset	length	description
+0       1       flags: b0: framing/parity error, b1: block checksum error
+1       2       used data length in bytes
+3       ?       track data, zero-padded up to track block size
+
+Data Storage
+------------
+
+Rather than using a traditional FDC chip, Deep Thought uses a Motorola MC6850
+UART for its data read and write operations. This makes the media incompatible
+with PC floppy controllers, and requires special tools to access data on them.
+
+Data is encoded using an FM-like system, but with the bit values reversed. Two
+flux reversals represent a 0, and a reversal followed by no reversal represents
+a 1. The bitcell size is 4us in a 300rpm drive.
+
+Within the bitstream it uses an asynchronous system similar to RS232-C, where
+1 is idle, and a transition to 0 represents the start bit for a frame. This is
+followed by 8 data bits, a parity bit (odd parity is used), and the return to
+idle for a stop bit.
+
+DOS Behaviour
+-------------
+
+Writing process:
+- motor on and wait 20ms head settle time
+- wait for index signal
+- enable write line
+- wait for 1ms, to write stream of idle '1' bits
+- write 6 bytes of FF (255) sync and 1 byte of 2A (42) as block header
+- write each byte in data block to UART
+- write 8-bit block checksum, calculating from sum of block bytes
+- wait for 1ms for writing to complete, and more idle
+- disable write line
+
+Reading process:
+- motor on and wait 20ms head settle time
+- wait for index signal
+- read byte and loop until FF (255) found
+- read byte and check for 2A (42), loop waiting for FF (255) if not
+- read requested count of bytes in data block
+- read checksum byte, test against sum of block bytes
+
+Image Considerations
+--------------------
+
+The lack of traditional FDC on-disk structures makes it difficult to represent
+the content in a neutral way, without resorting to storing the bitstream. This
+image format is very much tuned to known DOS usage. It is also intended to
+provide simple access to the content for emulators and other tools.
+
+To avoid too much junk in the disk image, track data is trimmed at both ends.
+The start of the stored block begins at the FF (255) sync bytes, ignoring any
+bad data generated due to false start bits. The end of the stored block is cut
+at the first long idle detected inside a valid data block. This is also done
+because the remainder of the track is not cleared, and still contains whatever
+was last written to the disk.
+
+Each byte read from the original source can generate a parity or framing error.
+Rather than store an error bit for each byte, the image stores an overall
+error status for the track. Bit 0 is set for parity or framing errors, and for
+convenience, also if the block checksum is incorrect. DOS rejects tracks read
+with an error, so it was felt sufficient to use a track-level status.
+
+The 4us bitcell size gives a potential 25000 bits per track in a 300rpm drive.
+With 11 bits per UART byte frame, that gives a maximum capacity of 2272 bytes
+(not including the DOS wait before and after each block). For that reason the
+image header suggests the rounded 2304 bytes for the track block size.
+
+Creating DTI Images
+-------------------
+
+The current dumping process requires either a KryoFlux or SuperCard Pro USB
+board, connected to the appropriate drive type. The dumped image data is passed
+through SAMdisk for conversion to a DTI image:
+
+For KryoFlux:
+  SAMdisk track00.0.raw image.dti --ace
+
+For SuperCard Pro:
+  SAMdisk image.scp image.dti --ace
+
+If 40-track media is dumped using an 80-track drive you'll need to add -d to
+the command-line options to double-step the head between source tracks.
+
+Using DTI Images
+----------------
+
+At this time there are no Jupiter Ace emulators that support the Deep Thought
+interface, so the DTI images can't be used directly. However, the included
+Python script can extract individual files from them:
+
+    ./extract.py image.dti
+
+This extracts files to a 'image.files' sub-directory.
+
+Even these raw files are not ready for emulator use. Creating TAP files from
+them requires constructing a suitable Ace tape header, calculating some system
+variable values active at the point of saving. This has not yet been achieved.
+The final 16 bytes of each data file appears to contain meta-data related to
+(but not directly compatible with) the required header values.
+
+---
+
+Simon Owen
+simon@simonowen.com
